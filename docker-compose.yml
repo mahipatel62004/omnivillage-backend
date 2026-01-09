@@ -1,0 +1,40 @@
+version: "3.8"
+services:
+  mongodb:
+    image: mongo:6.0
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    ports:
+      - "27017:27017"
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      - MONGODB_URI=mongodb://mongodb:27017/omnivillage
+      - MONGO_DB_NAME=omnivillage
+      - JWT_SECRET=change_this_secret
+      - DEEPSEEK_URL=
+      - DEEPSEEK_API_KEY=
+      - OPENAI_API_KEY=
+      - OLLAMA_URL=
+    ports:
+      - "8000:8000"
+    depends_on:
+      - mongodb
+
+  admin:
+    build:
+      context: ./admin-panel
+      dockerfile: Dockerfile
+    environment:
+      - REACT_APP_API_URL=http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  mongo_data:

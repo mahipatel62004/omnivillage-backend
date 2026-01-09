@@ -19,7 +19,7 @@ from functools import lru_cache
 # ============================================================
 MONGO_URI = os.getenv("MONGO_URI")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-PORT = int(os.getenv("PORT", "8001"))
+
 
 if not MONGO_URI:
     raise RuntimeError("MONGO_URI missing")
@@ -137,10 +137,7 @@ def detect_domain(question):
        return "water"
     if any(w in q for w in ["household items", "personal items", "daily items"]):
        return "household_items"
-    if any(w in q for w in ["household items", "personal items", "daily items"]):
-       return "household_items"
-    if any(w in q for w in ["household items", "personal items", "daily items"]):
-       return "household_items"
+    
 
     return "business"
 
@@ -1617,11 +1614,6 @@ Rules:
 """
 
 
-@app.route("/")
-def home():
-    return send_from_directory(FRONTEND_DIR, "chatbot.html")
-
-
 
 # ============================================================
 # ROUTES
@@ -1724,9 +1716,3 @@ def chat():
         )
     }), 200
 
-
-# ============================================================
-# RUN
-# ============================================================
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=PORT)

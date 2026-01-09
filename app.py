@@ -1659,7 +1659,8 @@ def chat():
         elif domain == "business":
             data = business_knowledge_cached()
             payload = business_llm_payload(data)
-            payload_text = json.dumps(payload, indent=2)
+            payload_text = json.dumps(make_json_safe(payload), indent=2)
+
             prompt = business_llm_prompt(question, payload_text)
 
 

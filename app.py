@@ -56,6 +56,9 @@ MAX_OUTPUT_TOKENS = 700
 # ============================================================
 # SAFE JSON SERIALIZATION (REQUIRED)
 # ============================================================
+from datetime import datetime
+from bson import ObjectId
+
 def make_json_safe(obj):
     if isinstance(obj, dict):
         return {k: make_json_safe(v) for k, v in obj.items()}
@@ -1628,95 +1631,78 @@ Rules:
 @limiter.limit("5 per minute")
 def chat():
     try:
-        payload_json = request.get_json(silent=True) or {}
-        question = payload_json.get("message", "").strip()
+        body = request.get_json(silent=True) or {}
+        question = body.get("message", "").strip()
 
         if not question:
-            return jsonify({"reply": "Please ask a valid question."}), 200
+            return jsonify({"reply": "Please ask a valid question."})
 
         domain = detect_domain(question)
 
-        # ---------------- AGRICULTURE ----------------
         if domain == "agriculture":
             data = agriculture_knowledge()
             payload = agriculture_llm_payload(data)
             payload_text = json.dumps(make_json_safe(payload), indent=2)
             prompt = agriculture_llm_prompt(question, payload_text)
 
-        # ---------------- ENERGY ----------------
         elif domain == "energy":
             data = energy_knowledge()
             payload = energy_llm_payload(data)
             payload_text = json.dumps(make_json_safe(payload), indent=2)
             prompt = energy_llm_prompt(question, payload_text)
 
-        # ---------------- BUSINESS ----------------
+        elif domain == "demographics":
+            data = demographics_knowledge()
+            prompt = demographics_llm_prompt(question, make_json_safe(data))
+
+        elif domain == "land":
+            data = land_knowledge()
+            prompt = land_llm_prompt(question, make_json_safe(data))
+
+        elif domain == "hunting":
+            data = hunting_knowledge()
+            prompt = hunting_llm_prompt(question, make_json_safe(data))
+
         elif domain == "business":
             data = business_knowledge_cached()
             payload = business_llm_payload(data)
             payload_text = json.dumps(make_json_safe(payload), indent=2)
             prompt = business_llm_prompt(question, payload_text)
 
-        # ---------------- DEMOGRAPHICS ----------------
-        elif domain == "demographics":
-            data = make_json_safe(demographics_knowledge())
-            prompt = demographics_llm_prompt(question, data)
-
-        # ---------------- LAND ----------------
-        elif domain == "land":
-            data = make_json_safe(land_knowledge())
-            prompt = land_llm_prompt(question, data)
-
-        # ---------------- HUNTING ----------------
-        elif domain == "hunting":
-            data = make_json_safe(hunting_knowledge())
-            prompt = hunting_llm_prompt(question, data)
-
-        # ---------------- FISHERIES ----------------
         elif domain == "fisheries":
-            data = make_json_safe(fisheries_knowledge())
-            prompt = fisheries_llm_prompt(question, data)
+            data = fisheries_knowledge()
+            prompt = fisheries_llm_prompt(question, make_json_safe(data))
 
-        # ---------------- FORESTRY ----------------
         elif domain == "forestry":
-            data = make_json_safe(forestry_knowledge())
-            prompt = forestry_llm_prompt(question, data)
+            data = forestry_knowledge()
+            prompt = forestry_llm_prompt(question, make_json_safe(data))
 
-        # ---------------- HOUSING ----------------
         elif domain == "housing":
-            data = make_json_safe(housing_knowledge())
-            prompt = housing_llm_prompt(question, data)
+            data = housing_knowledge()
+            prompt = housing_llm_prompt(question, make_json_safe(data))
 
-        # ---------------- MOBILITY ----------------
         elif domain == "mobility":
-            data = make_json_safe(mobility_knowledge())
-            prompt = mobility_llm_prompt(question, data)
+            data = mobility_knowledge()
+            prompt = mobility_llm_prompt(question, make_json_safe(data))
 
-        # ---------------- WATER ----------------
         elif domain == "water":
-            data = make_json_safe(water_knowledge())
-            prompt = water_llm_prompt(question, data)
+            data = water_knowledge()
+            prompt = water_llm_prompt(question, make_json_safe(data))
 
-        # ---------------- HOUSEHOLD ITEMS ----------------
         elif domain == "household_items":
-            data = make_json_safe(other_household_items_knowledge())
-            prompt = other_household_items_llm_prompt(question, data)
+            data = other_household_items_knowledge()
+            prompt = other_household_items_llm_prompt(question, make_json_safe(data))
 
-        # ---------------- UNKNOWN ----------------
         else:
             return jsonify({
                 "reply": (
-                    "I can currently provide detailed village analysis for:\n\n"
-                    "• Business & enterprises\n"
-                    "• Agriculture & crops\n"
-                    "• Energy & infrastructure\n"
-                    "• Demographics\n"
-                    "• Land use\n"
-                    "• Fisheries, Forestry, Housing, Mobility, Water\n"
+                    "Supported domains:\n"
+                    "• Business\n• Agriculture\n• Energy\n• Demographics\n"
+                    "• Land\n• Hunting\n• Fisheries\n• Forestry\n"
+                    "• Housing\n• Mobility\n• Water"
                 )
-            }), 200
+            })
 
-        # ---------------- LLM CALL ----------------
         response = llm.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
@@ -1724,15 +1710,15 @@ def chat():
             max_tokens=MAX_OUTPUT_TOKENS
         )
 
-        return jsonify({"reply": response.choices[0].message.content}), 200
+        return jsonify({"reply": response.choices[0].message.content})
 
     except RateLimitError:
         return jsonify({
-            "reply": "System is under load. Please retry shortly."
+            "reply": "System under load. Please retry shortly."
         }), 200
 
     except Exception as e:
-        print("CHAT ERROR:", e)
         return jsonify({
-            "reply": "Internal processing error. Please retry."
-        }), 200
+            "reply": "Internal server error",
+            "error": str(e)
+        }), 500

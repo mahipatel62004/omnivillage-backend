@@ -12,6 +12,7 @@ from pymongo import MongoClient
 from bson import ObjectId
 from openai import OpenAI
 from functools import lru_cache
+from datetime import datetime
 
 
 # ============================================================
@@ -31,6 +32,8 @@ if not OPENAI_API_KEY:
 # ============================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FRONTEND_DIR = os.path.join(BASE_DIR, "frontend")
+PORT = int(os.environ["PORT"])
+PORT = int(os.environ["PORT"])
 
 app = Flask(__name__)
 CORS(app)
@@ -60,7 +63,10 @@ def make_json_safe(obj):
         return [make_json_safe(v) for v in obj]
     if isinstance(obj, ObjectId):
         return str(obj)
+    if isinstance(obj, datetime):
+        return obj.isoformat()
     return obj
+
 def stringify(obj, indent=0):
     pad = " " * indent
     if isinstance(obj, dict):

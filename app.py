@@ -1715,14 +1715,7 @@ def chat():
             prompt = other_household_items_llm_prompt(question, make_json_safe(data))
 
         else:
-            return jsonify({
-                "reply": (
-                    "Supported domains:\n"
-                    "• Business\n• Agriculture\n• Energy\n• Demographics\n"
-                    "• Land\n• Hunting\n• Fisheries\n• Forestry\n"
-                    "• Housing\n• Mobility\n• Water"
-                )
-            })
+            return jsonify({"reply": "Unsupported domain."})
 
         response = llm.responses.create(
             model="gpt-4o-mini",
@@ -1731,13 +1724,19 @@ def chat():
             max_output_tokens=MAX_OUTPUT_TOKENS
         )
 
-        return jsonify({"reply": response.output_text})
+        reply_text = ""
+        if hasattr(response, "output_text") and response.output_text:
+            reply_text = response.output_text
+        else:
+            try:
+                reply_text = response.output[0].content[0].text
+            except Exception:
+                reply_text = "No response generated."
 
+        return jsonify({"reply": reply_text})
 
     except RateLimitError:
-        return jsonify({
-            "reply": "System under load. Please retry shortly."
-        }), 200
+        return jsonify({"reply": "System under load. Please retry shortly."}), 200
 
     except Exception as e:
         return jsonify({

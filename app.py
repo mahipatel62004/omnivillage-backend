@@ -32,8 +32,7 @@ if not OPENAI_API_KEY:
 # ============================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FRONTEND_DIR = os.path.join(BASE_DIR, "frontend")
-PORT = int(os.environ["PORT"])
-PORT = int(os.environ["PORT"])
+PORT = int(os.getenv("PORT", 8000))
 
 app = Flask(__name__)
 CORS(app)
@@ -1065,14 +1064,8 @@ def mobility_knowledge():
             ]
         })
         
-    def mobility_llm_payload(data):
-     return {
-        "household_usage": data["household_mobility_usage"],
-        "household_needs": data["household_mobility_needs"],
-        "village_infrastructure": data["village_mobility_infrastructure"]
-    }
+   
 
-    
 
     # -------------------------------
     # Officer-level village context
@@ -1577,6 +1570,7 @@ Rules:
 - Convert all measurements into readable units
 - Fully human-readable policy language
 """
+
 def water_llm_prompt(question, data):
     readable = compact_summary(data)
 
@@ -1621,6 +1615,33 @@ Rules:
 - No Object IDs
 - Fully human-readable
 """
+def other_household_items_llm_prompt(question, data):
+    readable = compact_summary(data)
+    return f"""
+Sphere: Household Goods & Personal Items
+Indicator: Household Item Ownership & Expenditure
+
+USER QUESTION:
+{question}
+
+VILLAGE DATA:
+{readable}
+
+Individual household items
+Write one paragraph per household.
+
+Village-level values
+Summarise expenditure and dependency.
+
+Calculation logic
+Gap analysis
+Recommendations
+
+Rules:
+- No bullet points
+- No lists
+- No Object IDs
+"""
 
 
 
@@ -1628,7 +1649,7 @@ Rules:
 # ROUTES
 # ============================================================
 @app.route("/api/chat", methods=["POST"])
-@limiter.limit("5 per minute")
+@limiter.limit("10 per minute")
 def chat():
     try:
         body = request.get_json(silent=True) or {}
@@ -1703,14 +1724,15 @@ def chat():
                 )
             })
 
-        response = llm.chat.completions.create(
+        response = llm.responses.create(
             model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
+            input=prompt,
             temperature=0.3,
-            max_tokens=MAX_OUTPUT_TOKENS
+            max_output_tokens=MAX_OUTPUT_TOKENS
         )
 
-        return jsonify({"reply": response.choices[0].message.content})
+        return jsonify({"reply": response.output_text})
+
 
     except RateLimitError:
         return jsonify({

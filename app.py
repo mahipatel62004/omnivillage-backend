@@ -1724,14 +1724,18 @@ def chat():
             max_output_tokens=MAX_OUTPUT_TOKENS
         )
 
-        reply_text = ""
-        if hasattr(response, "output_text") and response.output_text:
-            reply_text = response.output_text
-        else:
-            try:
-                reply_text = response.output[0].content[0].text
-            except Exception:
-                reply_text = "No response generated."
+        reply_text = "No response generated."
+
+        try:
+            for item in response.output:
+                if item["type"] == "message":
+                    for c in item["content"]:
+                        if c["type"] == "output_text":
+                            reply_text = c["text"]
+                            break
+        except Exception as e:
+            reply_text = "Model response parsing failed."
+
 
         return jsonify({"reply": reply_text})
 
@@ -1739,6 +1743,7 @@ def chat():
         return jsonify({"reply": "System under load. Please retry shortly."}), 200
 
     except Exception as e:
+        traceback.print_exc()
         return jsonify({
             "reply": "Internal server error",
             "error": str(e)

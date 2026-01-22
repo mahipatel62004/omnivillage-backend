@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 load_dotenv()
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
-from openai import RateLimitError
+from openai import OpenAI
 import os, json, traceback
 from collections import Counter
 from flask_cors import CORS
@@ -13,6 +13,7 @@ from bson import ObjectId
 from openai import OpenAI
 from functools import lru_cache
 from datetime import datetime
+
 
 
 # ============================================================
@@ -31,7 +32,7 @@ if not OPENAI_API_KEY:
 # APP
 # ============================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-FRONTEND_DIR = os.path.join(BASE_DIR, "frontend")
+
 PORT = int(os.getenv("PORT", 8000))
 
 app = Flask(__name__)
@@ -39,9 +40,9 @@ CORS(app)
 
 limiter = Limiter(
     get_remote_address,
-    app=app,
-    default_limits=["20 per minute"]
+    app=app
 )
+
 
 
 
@@ -81,6 +82,30 @@ def stringify(obj, indent=0):
     return str(obj)
 
 # ============================================================
+# 🧠 AI MEMORY & LEARNING
+# ============================================================
+def log_interaction(question, domain, confidence, answer_mode, data_keys, reply):
+    db.ai_memory.insert_one({
+        "question": question,
+        "domain": domain,
+        "confidence": confidence,
+        "answer_mode": answer_mode,
+        "data_keys": data_keys,
+        "reply": reply,
+        "timestamp": datetime.utcnow()
+    })
+
+def update_intent_stats(domain, confidence):
+    db.ai_intent_stats.update_one(
+        {"domain": domain},
+        {
+            "$inc": {"count": 1},
+            "$set": {"last_confidence": confidence}
+        },
+        upsert=True
+    )
+
+# ============================================================
 # GENERIC DROPDOWN LOOKUP (GLOBAL)
 # ============================================================
 def build_lookup(collection):
@@ -90,65 +115,53 @@ def build_lookup(collection):
     return lookup
 
 # ============================================================
-# 🔍 DOMAIN DETECTION
+# 🎯 INTENT SCORING ENGINE
 # ============================================================
+
+INTENT_PROFILES = {
+    "agriculture": ["crop","cultivation","harvest","yield","consumption","grain","vegetable","fruit"],
+    "energy": ["electricity","power","fuel","petrol","renewable","grid","microgrid"],
+    "business": ["business","enterprise","income","profit","employment","market"],
+    "land": ["land","area","acre","hectare","ownership","distribution"],
+    "water": ["water","drinking","groundwater","scarcity","sewage","quality"],
+    "housing": ["house","housing","amenities","renovation","expansion"],
+    "fisheries": ["fish","pond","fisheries","feed","aquatic"],
+    "forestry": ["forest","timber","forestry"],
+    "mobility": ["road","transport","vehicle","travel","mobility"],
+    "demographics": ["population","health","education","occupation","skills","disability"],
+    "household_items": ["item", "utensil", "household", "goods", "equipment"]
+
+}
+
 def detect_domain(question):
     q = question.lower()
+    scores = {}
 
-    if any(w in q for w in [
-        "population", "demographic", "demography", "census",
-        "health", "education", "skills", "occupation",
-        "disability", "social"
-    ]):
-        return "demographics"
+    for domain, keywords in INTENT_PROFILES.items():
+        scores[domain] = sum(1 for k in keywords if k in q)
 
-    if any(w in q for w in [
-        "energy", "electricity", "petrol", "fuel",
-        "power", "microgrid", "renewable", "grid"
-    ]):
-        return "energy"
+    best_domain = max(scores, key=scores.get)
+    confidence = scores[best_domain] / max(len(INTENT_PROFILES[best_domain]), 1)
 
-    if any(w in q for w in [
-        "crop", "crops", "food", "consume", "consumption",
-        "agriculture", "grain", "vegetable", "fruit", "diet"
-    ]):
-        return "agriculture"
+    if scores[best_domain] == 0:
+        return "unknown", 0.0
 
-    if any(w in q for w in [
-        "fish", "fisheries", "pond", "feed", "aquatic"
-    ]):
-        return "fisheries"
+    return best_domain, round(confidence, 2)
 
-    if any(w in q for w in [
-        "forest", "forestry", "timber"
-    ]):
-        return "forestry"
+# ============================================================
+# 🧠 ANSWER MODE DECISION
+# ============================================================
 
-    if any(w in q for w in [
-        "house", "housing", "amenities", "home"
-    ]):
-        return "housing"
+def decide_answer_mode(question):
+    q = question.lower()
 
-    if any(w in q for w in [
-        "hunt", "hunting", "wildlife", "meat"
-    ]):
-        return "hunting"
-    
-    if any(w in q for w in [
-        "mobility", "transport", "road", "vehicle", "travel"
-    ]):
-        return "mobility"
-    if any(w in q for w in [
-    "water", "drinking water", "irrigation", "groundwater",
-    "water source", "water quality", "scarcity", "sewage"
-    ]):
-       return "water"
-    if any(w in q for w in ["household items", "personal items", "daily items"]):
-       return "household_items"
-    
-
-    return "business"
-
+    if any(w in q for w in ["why", "reason", "cause"]):
+        return "analysis"
+    if any(w in q for w in ["compare", "difference", "versus"]):
+        return "comparison"
+    if any(w in q for w in ["how much", "total", "number", "quantity"]):
+        return "quantitative"
+    return "descriptive"
 
 
 # ============================================================
@@ -176,6 +189,7 @@ def compact_summary(data, limit=MAX_PROMPT_CHARS):
     if len(text) > limit:
         return text[:limit] + "\n...[DATA TRUNCATED FOR MODEL SAFETY]"
     return text
+
 
 
 # ============================================================
@@ -1174,11 +1188,19 @@ def household_items_llm_payload(data):
 
 
 # ============================================================
-def business_llm_prompt(question, data):
+def business_llm_prompt(question, data, answer_mode):
     readable = compact_summary(data)
 
 
     return f"""
+
+Answer Mode: {answer_mode}
+
+Rules:
+- Use ONLY provided village data
+- No assumptions
+- No external knowledge
+
 You are OmniVillage AI, a professional rural enterprise analyst.
 
 USER QUESTION:
@@ -1217,11 +1239,19 @@ Rules:
 - No technical references
 - Use natural policy language
 """
-def agriculture_llm_prompt(question, data):
+def agriculture_llm_prompt(question, data, answer_mode):
     readable = compact_summary(data)
 
 
     return f"""
+
+Answer Mode: {answer_mode}
+
+Rules:
+- Use ONLY provided village data
+- No assumptions
+- No external knowledge
+
 You are OmniVillage AI.
 
 USER QUESTION:
@@ -1257,11 +1287,18 @@ Rules:
 - NO IDs
 - Crop paragraphs MUST come first
 """
-def forestry_llm_prompt(question, data):
+def forestry_llm_prompt(question, data, answer_mode):
     readable = compact_summary(data)
 
 
     return f"""
+Answer Mode: {answer_mode}
+
+Rules:
+- Use ONLY provided village data
+- No assumptions
+- No external knowledge
+
 You are OmniVillage AI, a professional forestry, commons, and natural resource systems analyst.
 
 USER QUESTION:
@@ -1305,11 +1342,18 @@ Rules:
 - Use formal policy and sustainability language
 """
 
-def demographics_llm_prompt(question, data):
+def demographics_llm_prompt(question, data, answer_mode):
     readable = compact_summary(data)
 
 
     return f"""
+Answer Mode: {answer_mode}
+
+Rules:
+- Use ONLY provided village data
+- No assumptions
+- No external knowledge
+
 You are OmniVillage AI, a professional demographic and social systems analyst.
 
 USER QUESTION:
@@ -1352,11 +1396,18 @@ Rules:
 - No Object IDs
 - Fully human-readable
 """
-def energy_llm_prompt(question, data):
+def energy_llm_prompt(question, data, answer_mode):
     readable = compact_summary(data)
 
 
     return f"""
+Answer Mode: {answer_mode}
+
+Rules:
+- Use ONLY provided village data
+- No assumptions
+- No external knowledge
+
 You are OmniVillage AI, a professional energy systems and infrastructure analyst.
 
 USER QUESTION:
@@ -1398,11 +1449,18 @@ Rules:
 - Fully human-readable
 """
 
-def fisheries_llm_prompt(question, data):
+def fisheries_llm_prompt(question, data, answer_mode):
     readable = compact_summary(data)
 
 
     return f"""
+Answer Mode: {answer_mode}
+
+Rules:
+- Use ONLY provided village data
+- No assumptions
+- No external knowledge
+
 Sphere: Fisheries, Feeds & Aquatic Food Systems
 Indicator: Fish Production, Feed Dependency & Economic Outcomes
 
@@ -1429,11 +1487,18 @@ Rules:
 - No IDs
 - Fully human-readable
 """
-def housing_llm_prompt(question, data):
+def housing_llm_prompt(question, data, answer_mode):
     readable = compact_summary(data)
 
 
     return f"""
+Answer Mode: {answer_mode}
+
+Rules:
+- Use ONLY provided village data
+- No assumptions
+- No external knowledge
+
 Sphere: Housing, Settlement & Built Environment
 Indicator: Housing Stock, Amenities & Expansion Needs
 
@@ -1461,11 +1526,18 @@ Rules:
 - No Object IDs
 - Images referenced textually
 """
-def hunting_llm_prompt(question, data):
+def hunting_llm_prompt(question, data, answer_mode):
     readable = compact_summary(data)
 
 
     return f"""
+Answer Mode: {answer_mode}
+
+Rules:
+- Use ONLY provided village data
+- No assumptions
+- No external knowledge
+
 Sphere: Wildlife Use, Hunting & Subsistence Systems
 Indicator: Hunting Intensity, Meat Use & Economic Role
 
@@ -1491,11 +1563,18 @@ Rules:
 - No bullet points
 - No Object IDs
 """
-def mobility_llm_prompt(question, data):
+def mobility_llm_prompt(question, data, answer_mode):
     readable = compact_summary(data)
 
 
     return f"""
+Answer Mode: {answer_mode}
+
+Rules:
+- Use ONLY provided village data
+- No assumptions
+- No external knowledge
+
 Sphere: Mobility, Transport & Connectivity
 Indicator: Household Mobility Access & Village Transport Infrastructure
 
@@ -1527,11 +1606,18 @@ Rules:
 - No Object IDs
 """
 
-def land_llm_prompt(question, data):
+def land_llm_prompt(question, data, answer_mode):
     readable = compact_summary(data)
 
 
     return f"""
+Answer Mode: {answer_mode}
+
+Rules:
+- Use ONLY provided village data
+- No assumptions
+- No external knowledge
+
 You are OmniVillage AI, a professional land-use and rural planning analyst.
 
 USER QUESTION:
@@ -1571,11 +1657,18 @@ Rules:
 - Fully human-readable policy language
 """
 
-def water_llm_prompt(question, data):
+def water_llm_prompt(question, data, answer_mode):
     readable = compact_summary(data)
 
 
     return f"""
+Answer Mode: {answer_mode}
+
+Rules:
+- Use ONLY provided village data
+- No assumptions
+- No external knowledge
+
 You are OmniVillage AI, a professional water systems and public health analyst.
 
 USER QUESTION:
@@ -1615,9 +1708,16 @@ Rules:
 - No Object IDs
 - Fully human-readable
 """
-def other_household_items_llm_prompt(question, data):
+def other_household_items_llm_prompt(question, data, answer_mode):
     readable = compact_summary(data)
     return f"""
+Answer Mode: {answer_mode}
+
+Rules:
+- Use ONLY provided village data
+- No assumptions
+- No external knowledge
+
 Sphere: Household Goods & Personal Items
 Indicator: Household Item Ownership & Expenditure
 
@@ -1658,61 +1758,63 @@ def chat():
         if not question:
             return jsonify({"reply": "Please ask a valid question."})
 
-        domain = detect_domain(question)
+        domain, confidence = detect_domain(question)
+        answer_mode = decide_answer_mode(question)
+
 
         if domain == "agriculture":
             data = agriculture_knowledge()
             payload = agriculture_llm_payload(data)
-            payload_text = json.dumps(make_json_safe(payload), indent=2)
-            prompt = agriculture_llm_prompt(question, payload_text)
+            payload_text = compact_summary(payload)
+            prompt = agriculture_llm_prompt(question, payload_text, answer_mode)
 
         elif domain == "energy":
             data = energy_knowledge()
             payload = energy_llm_payload(data)
-            payload_text = json.dumps(make_json_safe(payload), indent=2)
-            prompt = energy_llm_prompt(question, payload_text)
+            payload_text = compact_summary(payload)
+            prompt = energy_llm_prompt(question, payload_text, answer_mode)
 
         elif domain == "demographics":
             data = demographics_knowledge()
-            prompt = demographics_llm_prompt(question, make_json_safe(data))
+            prompt = demographics_llm_prompt(question, make_json_safe(data), answer_mode)
 
         elif domain == "land":
             data = land_knowledge()
-            prompt = land_llm_prompt(question, make_json_safe(data))
+            prompt = land_llm_prompt(question, make_json_safe(data), answer_mode)
 
         elif domain == "hunting":
             data = hunting_knowledge()
-            prompt = hunting_llm_prompt(question, make_json_safe(data))
+            prompt = hunting_llm_prompt(question, make_json_safe(data), answer_mode)
 
         elif domain == "business":
             data = business_knowledge_cached()
             payload = business_llm_payload(data)
-            payload_text = json.dumps(make_json_safe(payload), indent=2)
-            prompt = business_llm_prompt(question, payload_text)
+            payload_text = compact_summary(payload)
+            prompt = business_llm_prompt(question, payload_text, answer_mode)
 
         elif domain == "fisheries":
             data = fisheries_knowledge()
-            prompt = fisheries_llm_prompt(question, make_json_safe(data))
+            prompt = fisheries_llm_prompt(question, make_json_safe(data), answer_mode)
 
         elif domain == "forestry":
             data = forestry_knowledge()
-            prompt = forestry_llm_prompt(question, make_json_safe(data))
+            prompt = forestry_llm_prompt(question, make_json_safe(data), answer_mode)
 
         elif domain == "housing":
             data = housing_knowledge()
-            prompt = housing_llm_prompt(question, make_json_safe(data))
+            prompt = housing_llm_prompt(question, make_json_safe(data), answer_mode)
 
         elif domain == "mobility":
             data = mobility_knowledge()
-            prompt = mobility_llm_prompt(question, make_json_safe(data))
+            prompt = mobility_llm_prompt(question, make_json_safe(data), answer_mode)
 
         elif domain == "water":
             data = water_knowledge()
-            prompt = water_llm_prompt(question, make_json_safe(data))
+            prompt = water_llm_prompt(question, make_json_safe(data), answer_mode)
 
         elif domain == "household_items":
             data = other_household_items_knowledge()
-            prompt = other_household_items_llm_prompt(question, make_json_safe(data))
+            prompt = other_household_items_llm_prompt(question, make_json_safe(data), answer_mode)
 
         else:
             return jsonify({"reply": "Unsupported domain."})
@@ -1726,24 +1828,47 @@ def chat():
 
         reply_text = "No response generated."
 
-        try:
-            for item in response.output:
-                if item["type"] == "message":
-                    for c in item["content"]:
-                        if c["type"] == "output_text":
-                            reply_text = c["text"]
-                            break
-        except Exception as e:
-            reply_text = "Model response parsing failed."
+        if hasattr(response, "output_text") and response.output_text:
+            reply_text = response.output_text
 
+# ✅ FALLBACK PATH (structured output)
+        else:
+            try:
+                for item in response.output:
+                    if item["type"] == "message":
+                        for c in item["content"]:
+                            if c["type"] == "output_text":
+                                reply_text = c["text"]
+                                break
+            except Exception:
+             reply_text = "Model response parsing failed."
+
+# NOW this is valid
+        log_interaction(
+            question=question,
+            domain=domain,
+            confidence=confidence,
+            answer_mode=answer_mode,
+            data_keys=list(data.keys()) if isinstance(data, dict) else [],
+            reply=reply_text
+        )
+
+
+        update_intent_stats(domain, confidence)
 
         return jsonify({"reply": reply_text})
-
-    except RateLimitError:
-        return jsonify({"reply": "System under load. Please retry shortly."}), 200
+       
 
     except Exception as e:
         traceback.print_exc()
+
+        msg = str(e).lower()
+
+        if "rate limit" in msg or "429" in msg:
+            return jsonify({
+                "reply": "System is busy. Please wait a moment and retry."
+            }), 200
+
         return jsonify({
             "reply": "Internal server error",
             "error": str(e)
